@@ -1,7 +1,7 @@
 *.env
-.gitignore
-tests/*
-build/*
-dist/*
-zse.egg-info/*
-__pycache__/main.cpython-312.pyc
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+.venv/

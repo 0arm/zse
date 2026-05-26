@@ -15,7 +15,7 @@ import shlex
 import time
 from enum import Enum
 from types import SimpleNamespace
-import click
+import rich_click as click
 import paramiko
 from paramiko import (
     AuthenticationException,
@@ -102,17 +102,20 @@ def _build_args(*, command, interactive, local, upload_dir, clear, force, exclud
     )
 
 
-class _DefaultRunGroup(click.Group):
-    """Dispatches anything that isn't a known subcommand to `run`.
+class _DefaultRunGroup(click.RichGroup):
+    """Dispatches anything that isn't a known subcommand to `run` (or `fetch`).
 
-    So `zse 6991 autotest lab08` works as a shorthand for `zse run 6991 autotest lab08`.
+    `zse 6991 autotest lab08` is shorthand for `zse run 6991 autotest lab08`.
+    `zse 6991 fetch lab08` is shorthand for `zse fetch 6991 fetch lab08` —
+    detected when the second positional arg is exactly `fetch`.
     """
 
     def resolve_command(self, ctx, args):
         try:
             return super().resolve_command(ctx, args)
         except click.UsageError:
-            return "run", self.commands["run"], args
+            target = "fetch" if len(args) >= 2 and args[1] == "fetch" else "run"
+            return target, self.commands[target], args
 
 
 @click.group(
@@ -211,6 +214,61 @@ def config():
     subprocess.run(["code", CONFIG_PATH], check=False)
 
 
+@cli.command()
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt.")
+@click.option("-v", "--verbose", is_flag=True, help="Print the exact remote command.")
+def purge(yes, verbose):
+    """Delete the remote ~/.zse/ directory and everything in it.
+
+    Wipes any temp uploads left over from previous runs.
+    """
+    target = REMOTE_DIR.rstrip("/")
+    display_target = f"~/{target}"
+    if not yes and not click.confirm(
+        f"Permanently delete {display_target} on the remote?", default=False
+    ):
+        click.echo("Aborted.")
+        return
+
+    ssh_client = _open_ssh_client()
+    try:
+        sftp = ssh_client.open_sftp()
+        try:
+            try:
+                entries = sorted(sftp.listdir(target))
+            except FileNotFoundError:
+                click.echo(f"Nothing to purge — {display_target} doesn't exist.")
+                return
+        finally:
+            sftp.close()
+
+        if entries:
+            click.echo(f"Found {len(entries)} item(s) in {display_target}:")
+            for entry in entries:
+                click.echo(f"  {Fore.YELLOW}~/{target}/{entry}{Style.RESET_ALL}")
+        else:
+            click.echo(f"{display_target} is empty.")
+
+        cmd = f"rm -rf {shlex.quote(target)}"
+        if verbose:
+            click.echo(f"\n$ {cmd}")
+
+        _stdin, stdout, stderr = ssh_client.exec_command(cmd)
+        rc = stdout.channel.recv_exit_status()
+        if rc != 0:
+            err = stderr.read().decode(errors="replace").strip()
+            sys.stderr.write(
+                Fore.RED
+                + f"Purge failed (exit {rc}): {err or 'unknown error'}\n"
+                + Style.RESET_ALL
+            )
+            sys.exit(1)
+
+        click.echo(Fore.GREEN + f"\nPurged {display_target}." + Style.RESET_ALL)
+    finally:
+        ssh_client.close()
+
+
 def check_configs():
     """Checks if a config file has been setup"""
     if not os.path.isfile(CONFIG_PATH):
@@ -218,45 +276,75 @@ def check_configs():
 
 
 def create_config():
-    """Creates a config file if it doesn't exist."""
+    """Interactive first-run setup. Writes ~/.zse/config.ini."""
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    if not os.path.exists(CONFIG_PATH):
-        config_content = """
-[server]
-address = login.cse.unsw.edu.au # no need to change
-port = 22 # no need to change
-username = z5555555 # your zID
+    if os.path.exists(CONFIG_PATH):
+        return
 
-# note: dont use quotation marks around anything!
+    click.echo(
+        Style.BRIGHT + Fore.GREEN + "Welcome to zse" + Style.RESET_ALL
+        + " — let's set up your config."
+    )
+    click.echo(
+        Style.DIM + "One-time setup. Run `zse config` later to edit." + Style.RESET_ALL
+        + "\n"
+    )
 
-[auth] # key auth (default)
-type = key # do not change
-private_key_path = ~/.ssh/id_ed25519 # required for key auth
-passphrase = # optional if you have set a passphrase
-password = # optional if you havent created a keypair
+    zid = click.prompt(
+        Fore.CYAN + "Your zID" + Style.RESET_ALL
+        + Style.DIM + " (e.g. z5555555)" + Style.RESET_ALL,
+        type=str,
+    ).strip()
+    key_path = click.prompt(
+        Fore.CYAN + "Path to your SSH private key" + Style.RESET_ALL
+        + Style.DIM + " (press Enter for ~/.ssh/id_ed25519)" + Style.RESET_ALL,
+        default="~/.ssh/id_ed25519",
+        show_default=False,
+    ).strip()
+    passphrase = click.prompt(
+        Fore.CYAN + "Key passphrase" + Style.RESET_ALL
+        + Style.DIM + " (press Enter if none)" + Style.RESET_ALL,
+        default="",
+        show_default=False,
+        hide_input=True,
+    )
 
-; [auth] # password auth
-; type = password # do not change
-; password =  # optional (but recommended)
-        """
-        try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as config_file:
-                config_file.write(config_content.strip())
-                print("\033[32mConfig file created successfully.\033[0m\n")
-                print("Edit this file to use zse:")
-                print(f"{CONFIG_PATH}")
-                sys.exit(0)
-        except (OSError, IOError) as e:
-            print(f"\033[31mError creating config file: {e}\033[0m")
-            print("Edit this file to use zse:")
-            print(f"{CONFIG_PATH}")
-            sys.exit(0)
+    expanded_key = os.path.expanduser(key_path)
+    if not os.path.isfile(expanded_key):
+        click.echo(
+            Fore.YELLOW
+            + f"\nWarning: {expanded_key} doesn't exist yet."
+            + Style.RESET_ALL
+        )
+        click.echo(f"  Generate one: ssh-keygen -t ed25519 -f {key_path}")
+        click.echo(f"  Copy it to CSE: ssh-copy-id {zid}@login.cse.unsw.edu.au")
+
+    config_content = (
+        "[server]\n"
+        "address = login.cse.unsw.edu.au\n"
+        "port = 22\n"
+        f"username = {zid}\n"
+        "\n"
+        "[auth]\n"
+        f"private_key_path = {key_path}\n"
+        f"passphrase = {passphrase}\n"
+    )
+
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as config_file:
+            config_file.write(config_content)
+    except (OSError, IOError) as e:
+        click.echo(Fore.RED + f"Error writing config: {e}" + Style.RESET_ALL)
+        sys.exit(1)
+
+    click.echo(Fore.GREEN + f"\nConfig saved to {CONFIG_PATH}" + Style.RESET_ALL)
+    click.echo("Run your zse command again to start.")
+    sys.exit(0)
 
 
-def ssh_connect(args):
-    """Sets up SSH connection"""
+def _open_ssh_client():
+    """Reads config, opens an authenticated SSH connection, returns the client."""
     config = configparser.ConfigParser(inline_comment_prefixes="#")
-
     config.read(CONFIG_PATH)
 
     try:
@@ -276,55 +364,43 @@ def ssh_connect(args):
         print(config_err)
         print_err_msg(Error.EMPTY)
 
-    if auth_info["type"] == "key":
-        try:
-            ssh_client.connect(
-                hostname=server_info["address"],
-                username=server_info["username"],
-                pkey=paramiko.Ed25519Key(
-                    filename=os.path.expanduser(auth_info["private_key_path"])
-                ),
-                passphrase=auth_info["passphrase"],
-                password=auth_info["password"],
-                port=int(server_info.get("port", 22)),
-            )
-        except (
-            AuthenticationException,
-            SSHException,
-            socket.error,
-            socket.timeout,
-            KeyboardInterrupt,
-        ) as e:
-            print(e)
-            print_err_msg(Error.CONNECTION)
-    elif auth_info["type"] == "password":
-        try:
-            if (auth_info["password"]) == "":
-                password_var = input("What is your password: ")
-            else:
-                password_var = auth_info["password"]
+    if auth_info.get("type") == "password":
+        sys.stderr.write(
+            Fore.YELLOW
+            + "Password auth was removed. Delete ~/.zse/config.ini and re-run "
+            + "zse to set up key auth.\n"
+            + Style.RESET_ALL
+        )
+        sys.exit(1)
 
-            ssh_client.connect(
-                hostname=server_info["address"],
-                username=server_info["username"],
-                password=password_var,
-                port=int(server_info.get("port", 22)),
-                look_for_keys=False,
-            )
-        except (
-            AuthenticationException,
-            SSHException,
-            socket.error,
-            socket.timeout,
-            KeyboardInterrupt,
-        ) as e:
-            print(e)
-            print_err_msg(Error.CONNECTION)
-    else:
-        print_err_msg(Error.EMPTY)
+    try:
+        ssh_client.connect(
+            hostname=server_info["address"],
+            username=server_info["username"],
+            pkey=paramiko.Ed25519Key(
+                filename=os.path.expanduser(auth_info["private_key_path"])
+            ),
+            passphrase=auth_info.get("passphrase") or None,
+            port=int(server_info.get("port", 22)),
+        )
+    except (
+        AuthenticationException,
+        SSHException,
+        socket.error,
+        socket.timeout,
+        KeyboardInterrupt,
+    ) as e:
+        print(e)
+        print_err_msg(Error.CONNECTION)
+
     print_status(Status.AUTHENTICATING, zid=server_info["username"])
-    read_command(args, ssh_client)
+    return ssh_client
 
+
+def ssh_connect(args):
+    """Sets up SSH connection and dispatches the command."""
+    ssh_client = _open_ssh_client()
+    read_command(args, ssh_client)
     ssh_client.close()
 
 
@@ -427,7 +503,6 @@ def upload_and_run(sftp, local_dir, remote_dir, ssh_client, args, *, s=None):
     config = configparser.ConfigParser(inline_comment_prefixes="#")
     config.read(CONFIG_PATH)
     server_info = config["server"]
-    auth_info = config["auth"]
 
     user = server_info["username"]
     host = server_info["address"]
@@ -441,19 +516,8 @@ def upload_and_run(sftp, local_dir, remote_dir, ssh_client, args, *, s=None):
         + "; bash; "  # launch shell
         + " ".join(["rm", "-rf", "~/" + shlex.quote(remote_dir)])  # delete temp dir
     )
-    # print("Remote cmd:", remote_cmd)
 
     ssh_cmd = ["ssh", "-t", "-p", port, f"{user}@{host}", remote_cmd]
-
-    pw = auth_info.get("password", "").strip()
-    if auth_info.get("type", "password") == "password" and pw:
-        if shutil.which("sshpass"):
-            ssh_cmd = ["sshpass", "-p", pw] + ssh_cmd
-        elif args.verbose:
-            print(
-                "sshpass not found; falling back to interactive SSH prompt. "
-                "Tip: install sshpass or use key auth in config.ini."
-            )
 
     if args.verbose:
         print(f"Launching interactive session: {' '.join(ssh_cmd)}")

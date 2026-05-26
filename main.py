@@ -106,9 +106,16 @@ class _DefaultRunGroup(click.RichGroup):
     """Dispatches anything that isn't a known subcommand to `run` (or `fetch`).
 
     `zse 6991 autotest lab08` is shorthand for `zse run 6991 autotest lab08`.
-    `zse 6991 fetch lab08` is shorthand for `zse fetch 6991 fetch lab08` —
+    `zse 6991 fetch lab 00` is shorthand for `zse fetch 6991 fetch lab 00` —
     detected when the second positional arg is exactly `fetch`.
     """
+
+    COMMAND_ORDER = ["run", "fetch", "shell", "purge", "config"]
+
+    def list_commands(self, ctx):
+        ordered = [c for c in self.COMMAND_ORDER if c in self.commands]
+        extras = sorted(c for c in self.commands if c not in self.COMMAND_ORDER)
+        return ordered + extras
 
     def resolve_command(self, ctx, args):
         try:
@@ -168,7 +175,7 @@ def run(command, upload_dir, clear, force, exclude, verbose):
 def fetch(command, download_dir, upload_dir, clear, force, exclude, verbose):
     """Run COMMAND on the remote and download the resulting files.
 
-    Example: zse fetch 6991 fetch lab08
+    Example: zse fetch 6991 fetch lab 00
     """
     args = _build_args(
         command=command,

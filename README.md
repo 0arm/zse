@@ -3,113 +3,8 @@ A Python CLI built for UNSW students to submit files and run autotests on local 
 
 `zse` syncs your local working directory to the CSE servers, runs the command you'd normally type into an SSH session (`1521 autotest`, `give`, etc.), streams the output back, and tidies up after itself.
 
-> **On Windows?** Run everything from a WSL shell.
-
-## Installation
-
-Install directly from GitHub. The recommended way is with [uv](https://docs.astral.sh/uv/), which drops `zse` into an isolated environment on your `PATH`:
-
-```bash
-uv tool install git+https://github.com/0arm/zse.git
-```
-
-Or with plain pip:
-
-```bash
-pip install git+https://github.com/0arm/zse.git
-```
-
-Verify the install:
-
-```bash
-zse --version
-```
-
-To upgrade later, re-run the install command (uv: `uv tool upgrade zse`).
-
-Runtime dependencies (`paramiko`, `colorama`, `click`) are pinned to exact versions in [pyproject.toml](pyproject.toml), and a [uv.lock](uv.lock) is committed for fully reproducible dev environments.
-
-## Initial setup
-
-`zse` authenticates to CSE with an SSH keypair — password auth isn't supported.
-
-### 1. Generate an SSH keypair (skip if you already have one)
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
-```
-
-Press Enter at the passphrase prompt to leave it empty, or pick one (zse will ask for it during setup). This creates:
-
-- `~/.ssh/id_ed25519` — your **private** key (keep this secret)
-- `~/.ssh/id_ed25519.pub` — your **public** key (safe to share)
-
-### 2. Copy your public key to the CSE server
-
-Use `ssh-copy-id` to install your public key on `login.cse.unsw.edu.au`. Replace `z5555555` with your zID:
-
-```bash
-ssh-copy-id z5555555@login.cse.unsw.edu.au
-```
-
-You'll be prompted for your zPass once. After this, you should be able to SSH in without a password:
-
-```bash
-ssh z5555555@login.cse.unsw.edu.au
-```
-
-### 3. Configure zse
-
-Run any `zse` command for the first time and you'll be walked through an interactive setup — it asks for your zID, your private key path (default `~/.ssh/id_ed25519`), and an optional passphrase. The config is written to `~/.zse/config.ini`.
-
-To edit it later:
-
-```bash
-zse config
-```
-
-This opens `~/.zse/config.ini` in VS Code. The file looks like:
-
-```ini
-[server]
-address = login.cse.unsw.edu.au
-port = 22
-username = z5555555
-
-[auth]
-private_key_path = ~/.ssh/id_ed25519
-passphrase =
-```
-
-You're done — try `zse 1511 autotest lab01` from a project directory.
-
-## Usage
-
-```
-zse run 1511 autotest bad_pun -d ./tests/      # upload local files and run a command
-zse fetch 6991 fetch lab08                     # run a command and download files into ./
-zse fetch 6991 fetch lab08 --to ./labs/lab08   # download into a custom dir
-zse shell python                               # interactive ssh -t session
-zse 1511 autotest bad_pun                      # shorthand for `zse run ...`
-zse 6991 fetch lab08                           # shorthand for `zse fetch ...`
-zse config                                     # open config.ini in VS Code
-zse purge                                      # wipe the remote ~/.zse/ folder
-```
-
-Common flags (work with `run`, `fetch`, and `shell`):
-
-| Flag | Description |
-| --- | --- |
-| `-d, --dir PATH` | Local directory to upload (default: `./`) |
-| `-e, --exclude PATTERNS` | Comma/whitespace-separated names to skip |
-| `-c, --clear` | Clear the remote `~/.zse/` folder before syncing |
-| `-f, --force` | Overwrite existing local files without prompting (used with `fetch`) |
-| `-v, --verbose` | Print extra detail about uploads, paths, and exit codes |
-
-Example output:
-
 <pre style="font-family: 'Cascadia Mono', monospace; font-size: 12px;">
-<span style="color: lightgreen;">> zse run 1511 autotest bad_pun -d ./tests/</span>
+<span style="color: lightgreen;">> zse 1511 autotest bad_pun</span>
 <span style="color: cyan;">[1/5]</span> Connecting to: <span style="color: yellow;">login.cse.unsw.edu.au:22</span>
 <span style="color: cyan;">[2/5]</span> Authenticated as: <span style="color: lightgreen;">z5583960</span>
 <span style="color: cyan;">[3/5]</span> Establishing SFTP connection
@@ -125,12 +20,100 @@ Test 0 (./bad_pun) - <span style="color: lightgreen;">passed</span>
 Exit Status: <span style="color: lightgreen;">0</span>
 </pre>
 
-## Troubleshooting
+**What you get over plain `cserun`:**
+- Coloured, streamed output for autotests and `give` submissions
+- `zse fetch` — pull lab files (or any other remote output) straight into your local folder
+- `zse shell` — interactive `ssh -t` session inside the synced temp dir. Useful when you need to keep interacting with your program on the remote — e.g. debugging an interactive game or stepping through input prompts
 
-- **`Permission denied (publickey)`** — your public key isn't on the server yet. Re-run `ssh-copy-id z5555555@login.cse.unsw.edu.au` and confirm `ssh z5555555@login.cse.unsw.edu.au` works before retrying `zse`.
-- **`Error: Cannot connect to CSE server`** — double-check `[server] address` and `username` in `config.ini`. Run `zse config` to open it.
-- **Key has a passphrase and zse can't connect** — set `passphrase = ...` under `[auth]`, or remove the passphrase with `ssh-keygen -p -f ~/.ssh/id_ed25519`.
-- **`Password auth was removed.`** — you have an old config from a previous zse version. Delete `~/.zse/config.ini` and re-run zse to start the new interactive setup.
+## Installation
+
+Install with [uv](https://docs.astral.sh/uv/) — drops `zse` into an isolated environment on your `PATH`:
+
+```bash
+uv tool install git+https://github.com/0arm/zse.git
+```
+
+Verify it landed:
+
+```bash
+zse --version
+```
+
+Upgrade later with `uv tool upgrade zse`. Runtime deps are pinned in [pyproject.toml](pyproject.toml) and [uv.lock](uv.lock).
+
+## Setup
+
+On first run, `zse` walks you through an interactive setup (zID, key path, optional passphrase) and writes `~/.zse/config.ini`. Run `zse config` to edit it later.
+
+You need an SSH keypair authorised on CSE before that works — expand below if you haven't set one up.
+
+<details>
+<summary><strong>One-time SSH key setup</strong> (skip if you can already <code>ssh z5555555@login.cse.unsw.edu.au</code> without a password)</summary>
+
+1. **Generate a keypair** (skip if `~/.ssh/id_ed25519` already exists):
+
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+   ```
+
+2. **Authorise it on CSE** — replace `z5555555` with your zID. You'll enter your zPass once:
+
+   ```bash
+   ssh-copy-id z5555555@login.cse.unsw.edu.au
+   ```
+
+3. **Sanity-check** — should connect without a password prompt:
+
+   ```bash
+   ssh z5555555@login.cse.unsw.edu.au
+   ```
+
+</details>
+
+## Usage
+
+### Running commands on CSE
+
+The bare form is `zse <args...>` — anything that isn't a known subcommand is forwarded to the remote as-is, after syncing your current directory:
+
+```bash
+zse 1511 autotest bad_pun           # autotest from cwd
+zse 1521 dryrun ass1 ass1.c         # dryrun before submitting
+zse give cs1521 ass1 ass1.c ass1.h  # submit via `give`
+zse 1511 explain bad_pun            # any other CSE command works too
+```
+
+The explicit form is `zse run <args...>` — identical behaviour, only useful if your command starts with a word that clashes with a subcommand name.
+
+### Fetching files from CSE
+
+`zse fetch <args...>` runs a command on the remote and downloads whatever it produces into the local directory. Detected automatically when the second positional is `fetch`:
+
+```bash
+zse 6991 fetch lab 00                    # → ./
+zse 6991 fetch lab 00 --to ./labs/lab00  # → custom dir
+zse fetch 6991 fetch lab 00              # explicit form
+```
+
+### Interactive shell
+
+`zse shell` syncs your cwd and drops you into an `ssh -t` session inside the temp dir. Use it when your program needs ongoing interaction — debugging an interactive game, stepping through input prompts, poking around with a REPL:
+
+```bash
+zse shell          # bare shell in the synced temp dir
+zse shell ./game   # run ./game, then drop to shell on exit
+zse shell python3  # launch python, then drop to shell on exit
+```
+
+### Housekeeping
+
+```bash
+zse config    # edit ~/.zse/config.ini
+zse purge     # delete the remote ~/.zse/ folder
+zse purge -y  # skip the confirm prompt
+```
+
+Run `zse <command> --help` for the full flag list.
 
 ## Development
 
@@ -144,9 +127,3 @@ uv run zse --version
 ```
 
 `uv sync` installs the exact versions recorded in `uv.lock`. Run `uv lock --upgrade` to refresh pins after editing `pyproject.toml`.
-
-## Task list
-- [x] add y/n confirmation before fetching from remote
-- [x] enhance pipe feature i.e. actually make it useful
-- [x] document SSH key setup in the README
-- [ ] document how to build a standalone exe and add it to PATH

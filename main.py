@@ -192,7 +192,9 @@ def ssh_connect(args):
             ssh_client.connect(
                 hostname=server_info["address"],
                 username=server_info["username"],
-                pkey=paramiko.Ed25519Key(filename=auth_info["private_key_path"]),
+                pkey=paramiko.Ed25519Key(
+                    filename=os.path.expanduser(auth_info["private_key_path"])
+                ),
                 passphrase=auth_info["passphrase"],
                 password=auth_info["password"],
                 port=int(server_info.get("port", 22)),

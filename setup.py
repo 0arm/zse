@@ -21,7 +21,7 @@ class PostInstallCommand(install):
 
 setup(
     name="zse",
-    version="1.4.0",
+    version="2.0.0",
     description="A CLI tool that allows UNSW students to submit work to CSE machines.",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -35,12 +35,12 @@ setup(
     install_requires=[
         "paramiko",
         "colorama",
-        "platformdirs",
         "setuptools",
+        "click",
     ],
     entry_points={
         "console_scripts": [
-            "zse=main:main",
+            "zse=main:cli",
         ],
     },
     classifiers=[

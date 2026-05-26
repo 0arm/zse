@@ -1,4 +1,4 @@
 paramiko
 colorama
-platformdirs
 setuptools
+click

@@ -7,15 +7,15 @@ import secrets
 import sys
 import re
 import shutil
-import argparse
 import stat
-from enum import Enum
 import configparser
 import socket
 import subprocess
 import shlex
 import time
-from platformdirs import user_config_dir
+from enum import Enum
+from types import SimpleNamespace
+import click
 import paramiko
 from paramiko import (
     AuthenticationException,
@@ -26,7 +26,9 @@ from colorama import init, Fore, Style
 REMOTE_DIR = ".zse/"
 IGNORE_DIRS = [".git"]
 IGNORE_PREFIXES = ["_", "."]
-VERSION_NO = "1.5.0"
+VERSION_NO = "2.0.0"
+CONFIG_DIR = os.path.expanduser("~/.zse")
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
 
 
 class Error(Enum):
@@ -51,86 +53,174 @@ class Status(Enum):
     EXIT_STAT = 7
 
 
-def main():
-    """Main function for program"""
-    init()  # initialises colourama
-    args = setup_argparse()
-    check_configs()
-    ssh_connect(args)
-    sys.exit(0)
-
-
-def setup_argparse():
-    """Setups argparse to read and output the result of arguments"""
-    parser = argparse.ArgumentParser(
-        description="CLI tool that allows UNSW students to submit work to CSE machines."
-    )
-    parser.add_argument("command", help="The command to execute", nargs="+")
-    parser.add_argument(
-        "-i",
-        "--interactive",
-        action="store_true",
-        help="Uploads to a tempdir then opens a real ssh -t session:\n"
-        '  ssh -t ZID@host "cd <tempdir> && <command> && bash; rm -rf <tempdir>"',
-    )
-    parser.add_argument("-V", "--version", action="version", version=VERSION_NO)
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable verbose output."
-    )
-    parser.add_argument(
-        "-d",
-        "--dir",
-        "--directory",
-        type=str,
-        help="Specifies the directory that will be copied to CSE machines.",
-    )
-    parser.add_argument(
-        "-c",
-        "--clear",
-        action="store_true",
-        help="Clears remote zse folder before syncing files",
-    )
-    parser.add_argument(
-        "-f",
-        "--force",
-        action="store_true",
-        help="Force file syncing, overwriting existing files without user input",
-    )
-    parser.add_argument(
-        "-l",
-        "--local",
-        type=str,
-        help="Downloads files from remote server. Useful for fetch commands.",
-    )
-    parser.add_argument(
+def _common_options(f):
+    """Flags shared by run/fetch/shell."""
+    f = click.option(
+        "-v", "--verbose", is_flag=True, help="Enable verbose output."
+    )(f)
+    f = click.option(
         "-e",
         "--exclude",
-        nargs="?",
-        const="./",
         type=str,
-        help="Excludes folders/files from syncing (default is './' if no value is provided)",
-    )
-    args = parser.parse_args()
+        default=None,
+        help="Exclude files/folders (comma- or whitespace-separated).",
+    )(f)
+    f = click.option(
+        "-f",
+        "--force",
+        is_flag=True,
+        help="Overwrite existing files without prompting.",
+    )(f)
+    f = click.option(
+        "-c",
+        "--clear",
+        is_flag=True,
+        help="Clear the remote zse folder before syncing.",
+    )(f)
+    f = click.option(
+        "-d",
+        "--dir",
+        "upload_dir",
+        type=click.Path(),
+        default="./",
+        show_default=True,
+        help="Local directory to upload.",
+    )(f)
+    return f
 
-    return args
+
+def _build_args(*, command, interactive, local, upload_dir, clear, force, exclude, verbose):
+    return SimpleNamespace(
+        command=list(command),
+        interactive=interactive,
+        local=local,
+        dir=upload_dir,
+        clear=clear,
+        force=force,
+        exclude=exclude,
+        verbose=verbose,
+    )
+
+
+class _DefaultRunGroup(click.Group):
+    """Dispatches anything that isn't a known subcommand to `run`.
+
+    So `zse 6991 autotest lab08` works as a shorthand for `zse run 6991 autotest lab08`.
+    """
+
+    def resolve_command(self, ctx, args):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            return "run", self.commands["run"], args
+
+
+@click.group(
+    cls=_DefaultRunGroup,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.version_option(VERSION_NO, "-V", "--version")
+def cli():
+    """Submit work to UNSW CSE machines over SSH.
+
+    Anything that isn't a known subcommand is treated as `run`, so
+    `zse 6991 autotest lab08` is shorthand for `zse run 6991 autotest lab08`.
+    """
+    init()
+    check_configs()
+
+
+@cli.command()
+@_common_options
+@click.argument("command", nargs=-1, required=True)
+def run(command, upload_dir, clear, force, exclude, verbose):
+    """Upload local files and run COMMAND on the remote.
+
+    Example: zse run 6991 autotest lab08
+    """
+    args = _build_args(
+        command=command,
+        interactive=False,
+        local=False,
+        upload_dir=upload_dir,
+        clear=clear,
+        force=force,
+        exclude=exclude,
+        verbose=verbose,
+    )
+    ssh_connect(args)
+
+
+@cli.command()
+@click.option(
+    "--to",
+    "download_dir",
+    type=click.Path(),
+    default="./",
+    show_default=True,
+    help="Local directory to download files into.",
+)
+@_common_options
+@click.argument("command", nargs=-1, required=True)
+def fetch(command, download_dir, upload_dir, clear, force, exclude, verbose):
+    """Run COMMAND on the remote and download the resulting files.
+
+    Example: zse fetch 6991 fetch lab08
+    """
+    args = _build_args(
+        command=command,
+        interactive=False,
+        local=download_dir,
+        upload_dir=upload_dir,
+        clear=clear,
+        force=force,
+        exclude=exclude,
+        verbose=verbose,
+    )
+    ssh_connect(args)
+
+
+@cli.command()
+@_common_options
+@click.argument("command", nargs=-1, required=False)
+def shell(command, upload_dir, clear, force, exclude, verbose):
+    """Upload local files and open an interactive ssh -t shell.
+
+    If COMMAND is given, it is run before dropping into the shell.
+    Example: zse shell python
+    """
+    args = _build_args(
+        command=command,
+        interactive=True,
+        local=False,
+        upload_dir=upload_dir,
+        clear=clear,
+        force=force,
+        exclude=exclude,
+        verbose=verbose,
+    )
+    ssh_connect(args)
+
+
+@cli.command()
+def config():
+    """Open the zse config file in VS Code."""
+    if not os.path.isfile(CONFIG_PATH):
+        create_config()
+    click.echo(CONFIG_PATH)
+    subprocess.run(["code", CONFIG_PATH], check=False)
 
 
 def check_configs():
     """Checks if a config file has been setup"""
-    config_dir = user_config_dir("zse")
-    file_name = "config.ini"
-    file_path = os.path.join(config_dir, file_name)
-    if not os.path.isfile(file_path):
+    if not os.path.isfile(CONFIG_PATH):
         create_config()
 
 
 def create_config():
-    """Creates a config file if it doesn't exist, either by copying or generating one."""
-    config_dir = user_config_dir("zse")
-    os.makedirs(config_dir, exist_ok=True)
-    config_file_path = os.path.join(config_dir, "config.ini")
-
-    if not os.path.exists(config_file_path):
+    """Creates a config file if it doesn't exist."""
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    if not os.path.exists(CONFIG_PATH):
         config_content = """
 [server]
 address = login.cse.unsw.edu.au # no need to change
@@ -139,27 +229,27 @@ username = z5555555 # your zID
 
 # note: dont use quotation marks around anything!
 
-[auth] # password auth
-type = password # do not change
-password =  # optional (but recommended)
+[auth] # key auth (default)
+type = key # do not change
+private_key_path = ~/.ssh/id_ed25519 # required for key auth
+passphrase = # optional if you have set a passphrase
+password = # optional if you havent created a keypair
 
-; [auth] # key auth
-; type = key # do not change
-; private_key_path = ~/.ssh/id_ed25519 # required for key auth
-; passphrase = # optional if you have set a passphrase
-; password = # optional if you havent created a keypair
+; [auth] # password auth
+; type = password # do not change
+; password =  # optional (but recommended)
         """
         try:
-            with open(config_file_path, "w", encoding="utf-8") as config_file:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as config_file:
                 config_file.write(config_content.strip())
                 print("\033[32mConfig file created successfully.\033[0m\n")
                 print("Edit this file to use zse:")
-                print(f"{config_file_path}")
+                print(f"{CONFIG_PATH}")
                 sys.exit(0)
         except (OSError, IOError) as e:
             print(f"\033[31mError creating config file: {e}\033[0m")
             print("Edit this file to use zse:")
-            print(f"{config_file_path}")
+            print(f"{CONFIG_PATH}")
             sys.exit(0)
 
 
@@ -167,8 +257,7 @@ def ssh_connect(args):
     """Sets up SSH connection"""
     config = configparser.ConfigParser(inline_comment_prefixes="#")
 
-    config_file = os.path.join(user_config_dir("zse"), "config.ini")
-    config.read(config_file)
+    config.read(CONFIG_PATH)
 
     try:
         server_info = config["server"]
@@ -336,8 +425,7 @@ def upload_and_run(sftp, local_dir, remote_dir, ssh_client, args, *, s=None):
         pass
 
     config = configparser.ConfigParser(inline_comment_prefixes="#")
-    config_file = os.path.join(user_config_dir("zse"), "config.ini")
-    config.read(config_file)
+    config.read(CONFIG_PATH)
     server_info = config["server"]
     auth_info = config["auth"]
 
@@ -562,12 +650,11 @@ def sftp_recursive_put(sftp, local_path, remote_path, args):
 
 def print_err_msg(errno):
     """Helper function that prints error messages"""
-    config_dir = str(user_config_dir("zse"))
     if errno == Error.CONNECTION:
         sys.stderr.write(
             f"{Fore.RED}"
             + "Error: Cannot connect to CSE server. Review config file @ "
-            + f"{config_dir}."
+            + f"{CONFIG_PATH}."
             + f"{Fore.RESET}\n"
         )
     elif errno == Error.AUTH:
@@ -581,7 +668,7 @@ def print_err_msg(errno):
         sys.stderr.write(
             f"{Fore.RED}"
             + "Error: Reading config.ini failed. Review config file @ "
-            + f"{config_dir}"
+            + f"{CONFIG_PATH}"
             + f"{Fore.RESET}"
         )
     elif Error.REMOVAL:
@@ -641,4 +728,4 @@ def create_status_printer():
 print_status = create_status_printer()
 
 if __name__ == "__main__":
-    main()
+    cli()

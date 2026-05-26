@@ -4,8 +4,17 @@ A python program built for UNSW students to submit files and run autotests on lo
 
 ## Usage
 
+```
+zse run 1511 autotest bad_pun -d ./tests/      # upload local files and run a command
+zse fetch 6991 fetch lab08                     # run a command and download files into ./
+zse fetch 6991 fetch lab08 --to ./labs/lab08   # download into a custom dir
+zse shell python                               # interactive ssh -t session
+zse 1511 autotest bad_pun                      # shorthand for `zse run ...`
+zse config                                     # show the path to config.ini
+```
+
 <pre style="font-family: 'Cascadia Mono', monospace; font-size: 12px;">
-<span style="color: lightgreen;">> zse "1511 autotest bad_pun" -d ./tests/</span>
+<span style="color: lightgreen;">> zse run 1511 autotest bad_pun -d ./tests/</span>
 <span style="color: cyan;">[1/5]</span> Connecting to: <span style="color: yellow;">login.cse.unsw.edu.au:22</span>  
 <span style="color: cyan;">[2/5]</span> Authenticated as: <span style="color: lightgreen;">z5583960</span>  
 <span style="color: cyan;">[3/5]</span> Establishing SFTP connection  
